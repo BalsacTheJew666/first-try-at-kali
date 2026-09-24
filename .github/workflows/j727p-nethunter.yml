@@ -204,13 +204,21 @@ jobs:
           # when the member does not exist.
           python3 - <<'PY'
           from pathlib import Path
+          import re
           p = Path("kernel/sched/core.c")
           s = p.read_text()
-          old = "\\tsec_gaf_supply_rqinfo(offsetof(struct rq, curr),\\n\\t\\t\\toffsetof(struct cfs_rq, rq));"
-          new = "#ifdef CONFIG_FAIR_GROUP_SCHED\\n\\tsec_gaf_supply_rqinfo(offsetof(struct rq, curr),\\n\\t\\t\\toffsetof(struct cfs_rq, rq));\\n#else\\n\\tsec_gaf_supply_rqinfo(offsetof(struct rq, curr), 0);\\n#endif"
-          if old not in s:
+          pat = r"(?m)^(?P<i>[ \\t]*)sec_gaf_supply_rqinfo\\(offsetof\\(struct rq, curr\\),\\s*\\n(?P=i)[ \\t]*offsetof\\(struct cfs_rq, rq\\)\\);"
+          m = re.search(pat, s)
+          if not m:
               raise SystemExit("sched_init GAF rqinfo block not found")
-          p.write_text(s.replace(old, new, 1))
+          i = m.group("i")
+          new = ("#ifdef CONFIG_FAIR_GROUP_SCHED\\n"
+                 + i + "sec_gaf_supply_rqinfo(offsetof(struct rq, curr),\\n"
+                 + i + "\\t\\toffsetof(struct cfs_rq, rq));\\n"
+                 + "#else\\n"
+                 + i + "sec_gaf_supply_rqinfo(offsetof(struct rq, curr), 0);\\n"
+                 + "#endif")
+          p.write_text(s[:m.start()] + new + s[m.end():])
           PY
 
           # Old DTC sources conflict with modern host toolchains. Keep the
