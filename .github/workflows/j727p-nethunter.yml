@@ -13,14 +13,20 @@ permissions:
   contents: read
 
 env:
-  DEVICE: j727p
-  MODEL: SM-J727P
-  ARCH: arm64
-  SUBARCH: arm64
+  DEVICE: "j727p"
+  MODEL: "SM-J727P"
+  ARCH: "arm64"
+  SUBARCH: "arm64"
+  KERNEL_REPO: "https://github.com/animania260/android_kernel_samsung_j7poplte_usa_spr.git"
+  TOOLCHAIN_REPO: "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
+  TOOLCHAIN_BRANCH: "android10-release"
+  NH_BUILDER_REPO: "https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-kernel-builder.git"
 
-  KERNEL_REPO: https://github.com/animania260/android_kernel_samsung_j7poplte_usa_spr.git
+jobs:
+  build:
+    name: J727P NetHunter
+    runs-on: ubuntu-22.04
 
-  TOOLCHAIN_REPO: https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
-  TOOLCHAIN_BRANCH: android10-release
-
-  NH_BUILDER_REPO: https://gitlab.com/kalilinux/nethunter/build-scripts/kali-n
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
