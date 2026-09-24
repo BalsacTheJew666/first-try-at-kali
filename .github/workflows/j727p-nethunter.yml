@@ -184,6 +184,20 @@ jobs:
           p.write_text(s.replace(old, new, 1))
           PY
 
+          # arch_mmap_rnd() returns rnd even when PF_RANDOMIZE is clear.
+          # Initialize it to zero so the non-randomized path is deterministic
+          # and GCC does not flag a real maybe-uninitialized bug.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("arch/arm64/mm/mmap.c")
+          s = p.read_text()
+          old = "unsigned long rnd;\n\n\tif (current->flags & PF_RANDOMIZE)"
+          new = "unsigned long rnd = 0;\n\n\tif (current->flags & PF_RANDOMIZE)"
+          if old not in s:
+              raise SystemExit("arch_mmap_rnd declaration not found")
+          p.write_text(s.replace(old, new, 1))
+          PY
+
           # Old DTC sources conflict with modern host toolchains. Keep the
           # parser's yylloc definition and make the lexer reference it via an
           # extern declaration instead of deleting the symbol entirely.
