@@ -139,6 +139,36 @@ jobs:
           p.write_text(s)
           PY
 
+          # Qualcomm's dma-mapping-fast.h uses dma_iommu_mapping in
+          # prototypes before declaring the struct. Fix the source instead of
+          # whitelisting each resulting warning.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("include/linux/dma-mapping-fast.h")
+          s = p.read_text()
+          marker = '#include <linux/io-pgtable-fast.h>'
+          decl = 'struct dma_iommu_mapping; /* build compatibility */'
+          if decl not in s:
+              s = s.replace(marker, marker + '\n\n' + decl, 1)
+          p.write_text(s)
+          PY
+
+          # setup.c includes sec_debug.h only when CONFIG_SEC_DEBUG is enabled,
+          # but calls sec_debug_print_model() unconditionally. Guard the call
+          # with the same Kconfig condition.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("arch/arm64/kernel/setup.c")
+          s = p.read_text()
+          call = '\t\tsec_debug_print_model(m, cpu_name);'
+          guarded = '#ifdef CONFIG_SEC_DEBUG\n' + call + '\n#endif'
+          if guarded not in s:
+              if call not in s:
+                  raise SystemExit("sec_debug_print_model call not found")
+              s = s.replace(call, guarded, 1)
+          p.write_text(s)
+          PY
+
           # Old DTC sources conflict with modern host toolchains. Keep the
           # parser's yylloc definition and make the lexer reference it via an
           # extern declaration instead of deleting the symbol entirely.
