@@ -60,6 +60,16 @@ jobs:
         run: |
           set -euxo pipefail
           git clone --depth=1 --branch "$TOOLCHAIN_BRANCH" "$TOOLCHAIN_REPO" toolchain
+
+          # android10-release wraps GCC with a deprecation script that prints
+          # multiple lines to stderr. Samsung's gcc-wrapper.py interprets that
+          # stream as compiler diagnostics. Point the normal gcc name directly
+          # at the real GCC binary shipped beside the wrapper.
+          REAL_GCC="$GITHUB_WORKSPACE/toolchain/bin/a8fe5040-2585-11e9-9684-4b547fbede22"
+          test -x "$REAL_GCC"
+          rm -f "$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-gcc"
+          ln -s "$(basename "$REAL_GCC")" "$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-gcc"
+
           echo "$GITHUB_WORKSPACE/toolchain/bin" >> "$GITHUB_PATH"
 
       - name: Verify compiler
