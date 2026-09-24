@@ -89,16 +89,17 @@ jobs:
           python3 -m lib2to3 -w -n scripts/gcc-wrapper.py
 
           # lib2to3 fixes Python-2 syntax but subprocess output is still bytes
-          # under Python 3. Decode GCC stderr before warning parsing.
+          # under Python 3. Run the wrapper's subprocess in text mode so every
+          # stderr line is already a normal str.
           python3 - <<'PY'
           from pathlib import Path
           p = Path("scripts/gcc-wrapper.py")
           s = p.read_text()
-          old = "for line in proc.stderr:\n        print(line, end=' ')\n        interpret_warning(line)"
-          new = "for line in proc.stderr:\n        if isinstance(line, bytes):\n            line = line.decode('utf-8', errors='replace')\n        print(line, end=' ')\n        interpret_warning(line)"
+          old = "subprocess.Popen(args, stderr=subprocess.PIPE)"
+          new = "subprocess.Popen(args, stderr=subprocess.PIPE, universal_newlines=True)"
           if old not in s:
-              raise SystemExit("Could not locate converted gcc-wrapper stderr loop")
-          p.write_text(s.replace(old, new))
+              raise SystemExit("Could not locate subprocess.Popen in gcc-wrapper.py")
+          p.write_text(s.replace(old, new, 1))
           PY
           python3 -m py_compile scripts/gcc-wrapper.py
 
