@@ -3,8 +3,7 @@ name: SM-J727P NetHunter Kernel
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - ".github/workflows/j727p-nethunter.yml"
       - "patches/**"
@@ -13,14 +12,14 @@ permissions:
   contents: read
 
 env:
-  DEVICE: "j727p"
-  MODEL: "SM-J727P"
-  ARCH: "arm64"
-  SUBARCH: "arm64"
-  KERNEL_REPO: "https://github.com/animania260/android_kernel_samsung_j7poplte_usa_spr.git"
-  TOOLCHAIN_REPO: "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
-  TOOLCHAIN_BRANCH: "android10-release"
-  NH_BUILDER_REPO: "https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-kernel-builder.git"
+  DEVICE: j727p
+  MODEL: SM-J727P
+  ARCH: arm64
+  SUBARCH: arm64
+  KERNEL_REPO: https://github.com/animania260/android_kernel_samsung_j7poplte_usa_spr.git
+  TOOLCHAIN_REPO: https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
+  TOOLCHAIN_BRANCH: android10-release
+  NH_BUILDER_REPO: https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-kernel-builder.git
 
 jobs:
   build:
@@ -30,3 +29,373 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Free runner space
+        shell: bash
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost || true
+          df -h
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache curl flex git libelf-dev \
+            libncurses-dev libssl-dev make patch python3 rsync unzip wget \
+            xz-utils zip device-tree-compiler
+
+      - name: Clone J727P kernel
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 "$KERNEL_REPO" kernel
+          cd kernel
+          head -n 15 Makefile
+          git log -1 --oneline
+
+      - name: Download Android GCC 4.9
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 --branch "$TOOLCHAIN_BRANCH" "$TOOLCHAIN_REPO" toolchain
+          echo "$GITHUB_WORKSPACE/toolchain/bin" >> "$GITHUB_PATH"
+
+      - name: Verify compiler
+        shell: bash
+        run: |
+          set -euxo pipefail
+          "$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-gcc" --version
+
+      - name: Fix Samsung Linux 3.18 host compatibility
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd kernel
+
+          mkdir -p "$GITHUB_WORKSPACE/host-tools"
+          cat > "$GITHUB_WORKSPACE/host-tools/python2" <<'EOF'
+          #!/usr/bin/env bash
+          exec python3 "$@"
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/host-tools/python2"
+          echo "$GITHUB_WORKSPACE/host-tools" >> "$GITHUB_PATH"
+          export PATH="$GITHUB_WORKSPACE/host-tools:$PATH"
+          python2 --version
+
+          for f in scripts/dtc/dtc-lexer.l scripts/dtc/dtc-lexer.lex.c_shipped scripts/dtc/dtc-lexer.lex.c; do
+            if [ -f "$f" ]; then
+              sed -i '/^[[:space:]]*YYLTYPE[[:space:]]\+yylloc[[:space:]]*;[[:space:]]*$/d' "$f"
+            fi
+          done
+          grep -RIn 'YYLTYPE[[:space:]]*yylloc' scripts/dtc || true
+
+      - name: Clone NetHunter kernel builder
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 "$NH_BUILDER_REPO" nethunter-builder
+          find nethunter-builder/patches -type f \
+            \( -name "*.patch" -o -name "*.diff" \) \
+            | sort | tee nethunter-patches.txt || true
+
+      - name: Detect kernel version
+        id: kernelversion
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd kernel
+          VERSION=$(awk '/^VERSION =/{print $3}' Makefile)
+          PATCHLEVEL=$(awk '/^PATCHLEVEL =/{print $3}' Makefile)
+          SUBLEVEL=$(awk '/^SUBLEVEL =/{print $3}' Makefile)
+          KV="$VERSION.$PATCHLEVEL.$SUBLEVEL"
+          echo "Kernel version: $KV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "patchlevel=$PATCHLEVEL" >> "$GITHUB_OUTPUT"
+          echo "sublevel=$SUBLEVEL" >> "$GITHUB_OUTPUT"
+          echo "full=$KV" >> "$GITHUB_OUTPUT"
+
+      - name: Find J727P defconfig
+        id: defconfig
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd kernel
+          find arch/arm64/configs -maxdepth 1 -type f -printf '%f\n' | sort \
+            | tee "$GITHUB_WORKSPACE/all-defconfigs.txt"
+          find arch/arm64/configs -maxdepth 1 -type f -printf '%f\n' \
+            | grep -Ei 'j727|j7pop|j7|msm8953|msm8937|spr|samsung' \
+            | sort | tee "$GITHUB_WORKSPACE/candidates.txt" || true
+
+          DEFCONFIG=""
+          for candidate in \
+            msm8953_sec_j7poplte_usa_spr_defconfig \
+            msm8953_sec_j7popltespr_defconfig \
+            j727p_defconfig \
+            j7popltespr_defconfig \
+            j7poplte_defconfig; do
+            if [ -f "arch/arm64/configs/$candidate" ]; then
+              DEFCONFIG="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$DEFCONFIG" ]; then
+            mapfile -t MATCHES < <(find arch/arm64/configs -maxdepth 1 -type f -printf '%f\n' \
+              | grep -Ei 'j727|j7pop.*spr|j7poplte' || true)
+            if [ "$\{#MATCHES[@]}" -eq 1 ]; then DEFCONFIG="$\{MATCHES[0]}"; fi
+          fi
+
+          if [ -z "$DEFCONFIG" ]; then
+            echo "Unable to safely determine J727P defconfig"
+            cat "$GITHUB_WORKSPACE/candidates.txt" || true
+            exit 1
+          fi
+          echo "Selected: $DEFCONFIG"
+          echo "name=$DEFCONFIG" >> "$GITHUB_OUTPUT"
+
+      - name: Generate stock configuration
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export PATH="$GITHUB_WORKSPACE/host-tools:$PATH"
+          mkdir -p out artifacts
+          cd kernel
+          make O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 \
+            CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-" \
+            "\${{ steps.defconfig.outputs.name }}"
+
+      - name: Backup stock config
+        shell: bash
+        run: cp out/.config artifacts/j727p-stock.config
+
+      - name: Apply J727P custom patches
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd kernel
+          shopt -s nullglob
+          PATCHES=("$GITHUB_WORKSPACE"/patches/j727p/*.patch)
+          if [ "$\{#PATCHES[@]}" -eq 0 ]; then
+            echo "No patches/j727p/*.patch files."
+            exit 0
+          fi
+          for p in "$\{PATCHES[@]}"; do
+            echo "Testing $p"
+            patch --dry-run -p1 --forward --batch < "$p"
+            patch -p1 --forward --batch < "$p"
+          done
+
+      - name: Enable NetHunter configuration
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export PATH="$GITHUB_WORKSPACE/host-tools:$PATH"
+          cd kernel
+          CFG="$GITHUB_WORKSPACE/out/.config"
+          test -f "$CFG"
+
+          set_cfg() {
+            local key="$1" val="$2"
+            if grep -q "^$\{key}=" "$CFG"; then
+              sed -i "s/^$\{key}=.*/$\{key}=$\{val}/" "$CFG"
+            elif grep -q "^# $\{key} is not set" "$CFG"; then
+              sed -i "s/^# $\{key} is not set/$\{key}=$\{val}/" "$CFG"
+            else
+              echo "$\{key}=$\{val}" >> "$CFG"
+            fi
+          }
+          enable_config() { set_cfg "$1" y; }
+          module_config() { set_cfg "$1" m; }
+
+          for k in \
+            CONFIG_PACKET CONFIG_UNIX CONFIG_INET CONFIG_IPV6 \
+            CONFIG_NETFILTER CONFIG_NETFILTER_ADVANCED CONFIG_NETFILTER_XTABLES \
+            CONFIG_NETFILTER_XT_MATCH_ADDRTYPE CONFIG_NETFILTER_XT_MATCH_COMMENT \
+            CONFIG_NETFILTER_XT_MATCH_CONNTRACK CONFIG_NETFILTER_XT_MATCH_LIMIT \
+            CONFIG_NETFILTER_XT_MATCH_MULTIPORT CONFIG_NETFILTER_XT_MATCH_STATE \
+            CONFIG_NETFILTER_XT_TARGET_MARK CONFIG_NETFILTER_XT_TARGET_NFLOG \
+            CONFIG_NF_CONNTRACK CONFIG_IP_NF_IPTABLES CONFIG_IP_NF_FILTER \
+            CONFIG_IP_NF_NAT CONFIG_TUN CONFIG_WIRELESS CONFIG_CFG80211 \
+            CONFIG_MAC80211 CONFIG_CFG80211_WEXT CONFIG_RFKILL CONFIG_USB \
+            CONFIG_USB_SUPPORT CONFIG_USB_COMMON CONFIG_USB_OTG CONFIG_USB_GADGET \
+            CONFIG_USB_ACM CONFIG_USB_SERIAL CONFIG_HID CONFIG_HIDRAW CONFIG_USB_HID \
+            CONFIG_USB_CONFIGFS CONFIG_USB_CONFIGFS_SERIAL CONFIG_USB_CONFIGFS_ACM \
+            CONFIG_USB_CONFIGFS_OBEX CONFIG_USB_CONFIGFS_NCM CONFIG_USB_CONFIGFS_ECM \
+            CONFIG_USB_CONFIGFS_ECM_SUBSET CONFIG_USB_CONFIGFS_RNDIS \
+            CONFIG_USB_CONFIGFS_EEM CONFIG_USB_CONFIGFS_MASS_STORAGE \
+            CONFIG_USB_CONFIGFS_F_HID CONFIG_BT CONFIG_BT_RFCOMM CONFIG_BT_RFCOMM_TTY \
+            CONFIG_CAN CONFIG_CAN_RAW CONFIG_MEDIA_SUPPORT CONFIG_MEDIA_DIGITAL_TV_SUPPORT \
+            CONFIG_EXT4_FS CONFIG_VFAT_FS CONFIG_FUSE_FS CONFIG_NAMESPACES \
+            CONFIG_UTS_NS CONFIG_IPC_NS CONFIG_PID_NS CONFIG_NET_NS CONFIG_DEVTMPFS \
+            CONFIG_DEVTMPFS_MOUNT CONFIG_PROC_FS CONFIG_SYSFS; do
+            enable_config "$k"
+          done
+
+          for k in CONFIG_USB_SERIAL_FTDI_SIO CONFIG_USB_SERIAL_PL2303 \
+            CONFIG_USB_SERIAL_CP210X CONFIG_BT_HCIBTUSB CONFIG_CAN_SLCAN CONFIG_DVB_USB; do
+            module_config "$k"
+          done
+
+          make O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 \
+            CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-" olddefconfig
+
+      - name: Audit NetHunter config
+        shell: bash
+        run: |
+          grep -E 'CONFIG_(USB|HID|CFG80211|MAC80211|BT|TUN|NETFILTER|CAN|DVB)' out/.config \
+            | sort | tee artifacts/nethunter-config-audit.txt || true
+          cp out/.config artifacts/j727p-nethunter.config
+
+      - name: Compile J727P kernel
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export PATH="$GITHUB_WORKSPACE/host-tools:$PATH"
+          cd kernel
+          python2 --version
+          "$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-gcc" --version | head -1
+          make kernelversion
+          make -j2 O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 \
+            CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-" V=1 \
+            2>&1 | tee "$GITHUB_WORKSPACE/kernel-build.log"
+
+      - name: Install kernel modules
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export PATH="$GITHUB_WORKSPACE/host-tools:$PATH"
+          cd kernel
+          mkdir -p "$GITHUB_WORKSPACE/modules_out"
+          make O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 \
+            CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-" \
+            INSTALL_MOD_PATH="$GITHUB_WORKSPACE/modules_out" modules_install || true
+
+      - name: Locate and verify kernel image
+        id: image
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BOOT="$GITHUB_WORKSPACE/out/arch/arm64/boot"
+          find "$BOOT" -maxdepth 3 -type f -printf '%p %s bytes\n' | sort || true
+          IMAGE=""
+          for candidate in "$BOOT/Image.gz-dtb" "$BOOT/Image.gz" "$BOOT/Image"; do
+            if [ -s "$candidate" ]; then IMAGE="$candidate"; break; fi
+          done
+          if [ -z "$IMAGE" ]; then
+            echo "ERROR: no valid kernel image produced"
+            exit 1
+          fi
+          SIZE=$(stat -c%s "$IMAGE")
+          if [ "$SIZE" -lt 1000000 ]; then
+            echo "ERROR: suspiciously small kernel image: $SIZE bytes"
+            exit 1
+          fi
+          cp "$IMAGE" artifacts/
+          echo "path=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$IMAGE")" >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+
+      - name: Collect DTB and modules
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p artifacts/dtb artifacts/modules
+          find out/arch/arm64/boot -type f \
+            \( -name "*.dtb" -o -name "dt.img" -o -name "dtb.img" \) \
+            -exec cp {} artifacts/dtb/ \; || true
+          find modules_out -type f -name "*.ko" -exec cp {} artifacts/modules/ \; 2>/dev/null || true
+
+      - name: Prepare AnyKernel3
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ ! -d nethunter-builder/anykernel3 ]; then
+            echo "ERROR: NetHunter builder does not contain anykernel3"
+            exit 1
+          fi
+          cp -a nethunter-builder/anykernel3 AnyKernel3
+          cd AnyKernel3
+          rm -rf .git || true
+          rm -f Image Image.gz Image.gz-dtb zImage || true
+          cp "\${{ steps.image.outputs.path }}" "./\${{ steps.image.outputs.name }}"
+          find "$GITHUB_WORKSPACE/artifacts/dtb" -maxdepth 1 -type f -exec cp {} . \; 2>/dev/null || true
+          mkdir -p modules
+          cp "$GITHUB_WORKSPACE"/artifacts/modules/*.ko modules/ 2>/dev/null || true
+
+      - name: Configure J727P AnyKernel
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd AnyKernel3
+          cp anykernel.sh anykernel.original.sh
+          sed -i 's/^device\.name1=.*/device.name1=j727p/' anykernel.sh || true
+          sed -i 's/^device\.name2=.*/device.name2=j7popltespr/' anykernel.sh || true
+          sed -i 's/^device\.name3=.*/device.name3=j7poplte/' anykernel.sh || true
+          sed -i 's/^device\.name4=.*/device.name4=SM-J727P/' anykernel.sh || true
+          sed -n '1,200p' anykernel.sh
+
+      - name: Create NetHunter flashable ZIP
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd AnyKernel3
+          test -s "\${{ steps.image.outputs.name }}"
+          zip -r9 "$GITHUB_WORKSPACE/artifacts/SM-J727P-NetHunter-Kernel.zip" . \
+            -x ".git/*" "*.git*" "anykernel.original.sh"
+          cd "$GITHUB_WORKSPACE"
+          test -s artifacts/SM-J727P-NetHunter-Kernel.zip
+          unzip -l artifacts/SM-J727P-NetHunter-Kernel.zip | tee artifacts/zip-contents.txt
+
+      - name: Generate SHA256
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd artifacts
+          sha256sum SM-J727P-NetHunter-Kernel.zip > SM-J727P-NetHunter-Kernel.zip.sha256
+
+      - name: Generate build information
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cat > artifacts/build-info.txt <<EOF
+          Kali NetHunter kernel build
+          Device: Samsung Galaxy J7 Perx
+          Model: SM-J727P
+          Codename: j727p / j7popltespr / j7poplte
+          SoC: Qualcomm MSM8953
+          Architecture: ARM64
+          Kernel: \${{ steps.kernelversion.outputs.full }}
+          Defconfig: \${{ steps.defconfig.outputs.name }}
+          Compiler: Android GCC 4.9 (aarch64-linux-android-)
+          Kernel source: $KERNEL_REPO
+          NetHunter builder: $NH_BUILDER_REPO
+          Kernel image: \${{ steps.image.outputs.name }}
+          Kernel image size: \${{ steps.image.outputs.size }}
+          EOF
+
+      - name: Collect diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          [ ! -f kernel-build.log ] || cp kernel-build.log artifacts/
+          [ ! -f all-defconfigs.txt ] || cp all-defconfigs.txt artifacts/
+          [ ! -f candidates.txt ] || cp candidates.txt artifacts/
+          [ ! -f nethunter-patches.txt ] || cp nethunter-patches.txt artifacts/
+          if [ -d kernel ]; then
+            find kernel -type f \( -name "*.rej" -o -name "*.orig" \) -print \
+              > artifacts/patch-rejects.txt || true
+          fi
+          find artifacts -maxdepth 3 -type f -printf '%p %s bytes\n' | sort || true
+
+      - name: Upload J727P NetHunter build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SM-J727P-NetHunter
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 30
