@@ -198,27 +198,19 @@ jobs:
           p.write_text(s.replace(old, new, 1))
           PY
 
-          # Samsung's GAF debug hook asks for offsetof(cfs_rq, rq), but
-          # cfs_rq.rq only exists with CONFIG_FAIR_GROUP_SCHED. The stock
-          # J727P config can build without it, so guard that offset and pass 0
-          # when the member does not exist.
+          # Samsung's GAF debug hook uses cfs_rq.rq, a member that only
+          # exists when CONFIG_FAIR_GROUP_SCHED is enabled. Patch the specific
+          # offsetof expression only; this avoids depending on indentation.
           python3 - <<'PY'
           from pathlib import Path
-          import re
           p = Path("kernel/sched/core.c")
           s = p.read_text()
-          pat = r"(?m)^(?P<i>[ \\t]*)sec_gaf_supply_rqinfo\\(offsetof\\(struct rq, curr\\),\\s*\\n(?P=i)[ \\t]*offsetof\\(struct cfs_rq, rq\\)\\);"
-          m = re.search(pat, s)
-          if not m:
-              raise SystemExit("sched_init GAF rqinfo block not found")
-          i = m.group("i")
-          new = ("#ifdef CONFIG_FAIR_GROUP_SCHED\\n"
-                 + i + "sec_gaf_supply_rqinfo(offsetof(struct rq, curr),\\n"
-                 + i + "\\t\\toffsetof(struct cfs_rq, rq));\\n"
-                 + "#else\\n"
-                 + i + "sec_gaf_supply_rqinfo(offsetof(struct rq, curr), 0);\\n"
-                 + "#endif")
-          p.write_text(s[:m.start()] + new + s[m.end():])
+          target = "offsetof(struct cfs_rq, rq)"
+          if target not in s:
+              raise SystemExit("cfs_rq rq offsetof expression not found")
+          replacement = ("0 /* cfs_rq.rq absent without FAIR_GROUP_SCHED */")
+          s = s.replace(target, replacement, 1)
+          p.write_text(s)
           PY
 
           # Old DTC sources conflict with modern host toolchains. Keep the
