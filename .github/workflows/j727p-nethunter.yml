@@ -144,7 +144,7 @@ jobs:
           if [ -z "$DEFCONFIG" ]; then
             mapfile -t MATCHES < <(find arch/arm64/configs -maxdepth 1 -type f -printf '%f\n' \
               | grep -Ei 'j727|j7pop.*spr|j7poplte' || true)
-            if [ "$\{#MATCHES[@]}" -eq 1 ]; then DEFCONFIG="$\{MATCHES[0]}"; fi
+            if [ "${#MATCHES[@]}" -eq 1 ]; then DEFCONFIG="${MATCHES[0]}"; fi
           fi
 
           if [ -z "$DEFCONFIG" ]; then
@@ -164,7 +164,7 @@ jobs:
           cd kernel
           make O="$GITHUB_WORKSPACE/out" ARCH=arm64 SUBARCH=arm64 \
             CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-android-" \
-            "\${{ steps.defconfig.outputs.name }}"
+            "${{ steps.defconfig.outputs.name }}"
 
       - name: Backup stock config
         shell: bash
@@ -177,11 +177,11 @@ jobs:
           cd kernel
           shopt -s nullglob
           PATCHES=("$GITHUB_WORKSPACE"/patches/j727p/*.patch)
-          if [ "$\{#PATCHES[@]}" -eq 0 ]; then
+          if [ "${#PATCHES[@]}" -eq 0 ]; then
             echo "No patches/j727p/*.patch files."
             exit 0
           fi
-          for p in "$\{PATCHES[@]}"; do
+          for p in "${PATCHES[@]}"; do
             echo "Testing $p"
             patch --dry-run -p1 --forward --batch < "$p"
             patch -p1 --forward --batch < "$p"
@@ -198,12 +198,12 @@ jobs:
 
           set_cfg() {
             local key="$1" val="$2"
-            if grep -q "^$\{key}=" "$CFG"; then
-              sed -i "s/^$\{key}=.*/$\{key}=$\{val}/" "$CFG"
-            elif grep -q "^# $\{key} is not set" "$CFG"; then
-              sed -i "s/^# $\{key} is not set/$\{key}=$\{val}/" "$CFG"
+            if grep -q "^${key}=" "$CFG"; then
+              sed -i "s/^${key}=.*/${key}=${val}/" "$CFG"
+            elif grep -q "^# ${key} is not set" "$CFG"; then
+              sed -i "s/^# ${key} is not set/${key}=${val}/" "$CFG"
             else
-              echo "$\{key}=$\{val}" >> "$CFG"
+              echo "${key}=${val}" >> "$CFG"
             fi
           }
           enable_config() { set_cfg "$1" y; }
@@ -319,7 +319,7 @@ jobs:
           cd AnyKernel3
           rm -rf .git || true
           rm -f Image Image.gz Image.gz-dtb zImage || true
-          cp "\${{ steps.image.outputs.path }}" "./\${{ steps.image.outputs.name }}"
+          cp "${{ steps.image.outputs.path }}" "./${{ steps.image.outputs.name }}"
           find "$GITHUB_WORKSPACE/artifacts/dtb" -maxdepth 1 -type f -exec cp {} . \; 2>/dev/null || true
           mkdir -p modules
           cp "$GITHUB_WORKSPACE"/artifacts/modules/*.ko modules/ 2>/dev/null || true
@@ -341,7 +341,7 @@ jobs:
         run: |
           set -euxo pipefail
           cd AnyKernel3
-          test -s "\${{ steps.image.outputs.name }}"
+          test -s "${{ steps.image.outputs.name }}"
           zip -r9 "$GITHUB_WORKSPACE/artifacts/SM-J727P-NetHunter-Kernel.zip" . \
             -x ".git/*" "*.git*" "anykernel.original.sh"
           cd "$GITHUB_WORKSPACE"
@@ -367,13 +367,13 @@ jobs:
           Codename: j727p / j7popltespr / j7poplte
           SoC: Qualcomm MSM8953
           Architecture: ARM64
-          Kernel: \${{ steps.kernelversion.outputs.full }}
-          Defconfig: \${{ steps.defconfig.outputs.name }}
+          Kernel: ${{ steps.kernelversion.outputs.full }}
+          Defconfig: ${{ steps.defconfig.outputs.name }}
           Compiler: Android GCC 4.9 (aarch64-linux-android-)
           Kernel source: $KERNEL_REPO
           NetHunter builder: $NH_BUILDER_REPO
-          Kernel image: \${{ steps.image.outputs.name }}
-          Kernel image size: \${{ steps.image.outputs.size }}
+          Kernel image: ${{ steps.image.outputs.name }}
+          Kernel image size: ${{ steps.image.outputs.size }}
           EOF
 
       - name: Collect diagnostics
