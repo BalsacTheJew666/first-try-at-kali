@@ -169,6 +169,21 @@ jobs:
           p.write_text(s)
           PY
 
+          # When CONFIG_SEC_DEBUG is disabled this Samsung header provides
+          # no-op fallback functions. One fallback is missing inline, causing
+          # every translation unit that includes the header to emit an
+          # unused-function warning that Samsung's GCC wrapper makes fatal.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("include/linux/sec_debug.h")
+          s = p.read_text()
+          old = "static void sec_debug_update_dload_mode(const int restart_mode,"
+          new = "static inline void sec_debug_update_dload_mode(const int restart_mode,"
+          if old not in s:
+              raise SystemExit("sec_debug_update_dload_mode fallback not found")
+          p.write_text(s.replace(old, new, 1))
+          PY
+
           # Old DTC sources conflict with modern host toolchains. Keep the
           # parser's yylloc definition and make the lexer reference it via an
           # extern declaration instead of deleting the symbol entirely.
