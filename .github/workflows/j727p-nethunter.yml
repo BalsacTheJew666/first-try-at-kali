@@ -206,14 +206,8 @@ jobs:
           from pathlib import Path
           p = Path("kernel/sched/core.c")
           s = p.read_text()
-          old = """\tsec_gaf_supply_rqinfo(offsetof(struct rq, curr),
-\t\t\toffsetof(struct cfs_rq, rq));"""
-          new = """#ifdef CONFIG_FAIR_GROUP_SCHED
-\tsec_gaf_supply_rqinfo(offsetof(struct rq, curr),
-\t\t\toffsetof(struct cfs_rq, rq));
-#else
-\tsec_gaf_supply_rqinfo(offsetof(struct rq, curr), 0);
-#endif"""
+          old = "\\tsec_gaf_supply_rqinfo(offsetof(struct rq, curr),\\n\\t\\t\\toffsetof(struct cfs_rq, rq));"
+          new = "#ifdef CONFIG_FAIR_GROUP_SCHED\\n\\tsec_gaf_supply_rqinfo(offsetof(struct rq, curr),\\n\\t\\t\\toffsetof(struct cfs_rq, rq));\\n#else\\n\\tsec_gaf_supply_rqinfo(offsetof(struct rq, curr), 0);\\n#endif"
           if old not in s:
               raise SystemExit("sched_init GAF rqinfo block not found")
           p.write_text(s.replace(old, new, 1))
