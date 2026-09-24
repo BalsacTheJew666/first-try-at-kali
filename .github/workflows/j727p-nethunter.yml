@@ -198,6 +198,27 @@ jobs:
           p.write_text(s.replace(old, new, 1))
           PY
 
+          # Samsung's GAF debug hook asks for offsetof(cfs_rq, rq), but
+          # cfs_rq.rq only exists with CONFIG_FAIR_GROUP_SCHED. The stock
+          # J727P config can build without it, so guard that offset and pass 0
+          # when the member does not exist.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("kernel/sched/core.c")
+          s = p.read_text()
+          old = """\tsec_gaf_supply_rqinfo(offsetof(struct rq, curr),
+\t\t\toffsetof(struct cfs_rq, rq));"""
+          new = """#ifdef CONFIG_FAIR_GROUP_SCHED
+\tsec_gaf_supply_rqinfo(offsetof(struct rq, curr),
+\t\t\toffsetof(struct cfs_rq, rq));
+#else
+\tsec_gaf_supply_rqinfo(offsetof(struct rq, curr), 0);
+#endif"""
+          if old not in s:
+              raise SystemExit("sched_init GAF rqinfo block not found")
+          p.write_text(s.replace(old, new, 1))
+          PY
+
           # Old DTC sources conflict with modern host toolchains. Keep the
           # parser's yylloc definition and make the lexer reference it via an
           # extern declaration instead of deleting the symbol entirely.
