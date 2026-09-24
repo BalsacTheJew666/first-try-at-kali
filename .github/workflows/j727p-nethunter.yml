@@ -84,9 +84,17 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/host-tools:$PATH"
           python2 --version
 
-          for f in scripts/dtc/dtc-lexer.l scripts/dtc/dtc-lexer.lex.c_shipped scripts/dtc/dtc-lexer.lex.c; do
+          # Samsung's gcc-wrapper.py is Python 2 code. Convert it in-place for
+          # the Python 3 runtime available on current GitHub runners.
+          python3 -m lib2to3 -w -n scripts/gcc-wrapper.py
+          python3 -m py_compile scripts/gcc-wrapper.py
+
+          # Old DTC sources conflict with modern host toolchains. Keep the
+          # parser's yylloc definition and make the lexer reference it via an
+          # extern declaration instead of deleting the symbol entirely.
+          for f in scripts/dtc/dtc-lexer.l scripts/dtc/dtc-lexer.lex.c_shipped; do
             if [ -f "$f" ]; then
-              sed -i '/^[[:space:]]*YYLTYPE[[:space:]]\+yylloc[[:space:]]*;[[:space:]]*$/d' "$f"
+              sed -i 's/^[[:space:]]*YYLTYPE[[:space:]]\+yylloc[[:space:]]*;[[:space:]]*$/extern YYLTYPE yylloc;/' "$f"
             fi
           done
           grep -RIn 'YYLTYPE[[:space:]]*yylloc' scripts/dtc || true
