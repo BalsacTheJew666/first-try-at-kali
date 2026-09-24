@@ -113,6 +113,32 @@ jobs:
           PY
           python3 -m py_compile scripts/gcc-wrapper.py
 
+          # This Samsung 3.18 tree treats every non-whitelisted GCC warning as
+          # fatal. GCC 4.9 emits a known harmless warning from the Qualcomm
+          # fast-DMA header, so whitelist that source location.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("scripts/gcc-wrapper.py")
+          s = p.read_text()
+          marker = 'allowed_warnings = set(['
+          if '"dma-mapping-fast.h:46"' not in s:
+              s = s.replace(marker, marker + '\n    "dma-mapping-fast.h:46",', 1)
+          p.write_text(s)
+          PY
+
+          # setup.c calls sec_debug_print_model() through sec_debug.h.  The
+          # header uses struct seq_file but does not declare it early enough
+          # for this old tree/toolchain combination.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("include/linux/sec_debug.h")
+          s = p.read_text()
+          marker = '#define SEC_DEBUG_H'
+          if 'struct seq_file; /* build compatibility */' not in s:
+              s = s.replace(marker, marker + '\n\nstruct seq_file; /* build compatibility */', 1)
+          p.write_text(s)
+          PY
+
           # Old DTC sources conflict with modern host toolchains. Keep the
           # parser's yylloc definition and make the lexer reference it via an
           # extern declaration instead of deleting the symbol entirely.
