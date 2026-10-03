@@ -1,7 +1,9 @@
-# Save as .github/workflows/j727p-kernel.yaml on your repository's default branch.
+# Save as .github/workflows/j727p-nethunter.yaml on your repository's default branch.
 # Samsung Galaxy J7 Perx SM-J727P (j7poplte_usa_spr), Android 7.0 source.
+# Adds Kali's mac80211/rt2800 injection patches and Android USB HID support.
+# Built-in Pronto/Prima Wi-Fi monitor mode and injection remain unverified.
 # Outputs kernel binaries, DTBs, and modules; does not create a flashable boot.img.
-name: Build J727P kernel
+name: Build J727P NetHunter kernel
 
 on:
   workflow_dispatch:
@@ -12,9 +14,9 @@ on:
         default: animania260/android_kernel_samsung_j7poplte_usa_spr
         type: string
       kernel_ref:
-        description: "Kernel branch, tag, or commit SHA"
+        description: "Unpatched kernel branch, tag, or commit SHA"
         required: true
-        default: master
+        default: 73b886e5f13365ef8851f03309e7ede549f21c9d
         type: string
 
 permissions:
@@ -23,7 +25,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     defaults:
       run:
         shell: bash
@@ -32,6 +34,8 @@ jobs:
       SUBARCH: arm64
       KBUILD_BUILD_USER: github-actions
       KBUILD_BUILD_HOST: j727p-builder
+      # Official Kali NetHunter kernel patch repository, pinned for repeatability.
+      NETHUNTER_COMMIT: e49544f3dea44724f354aa6fce76a59e781b18e7
       # Official AOSP GCC 4.9, android-7.1.2_r39. Keep this old kernel on GCC 4.9.
       TOOLCHAIN_COMMIT: 6ca6746f5fafd7d1b162451dce2ae40741529e9e
       # -fcommon is needed by this kernel's old device-tree compiler on GCC 10+.
@@ -53,7 +57,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential bc bison flex git ca-certificates \
             libssl-dev libelf-dev libncurses5-dev libtinfo5 \
-            python2 rsync cpio kmod
+            python2 python3 rsync cpio kmod
           python2 --version
 
       - name: Install Android GCC 4.9
@@ -68,6 +72,51 @@ jobs:
           "${compiler_prefix}gcc" --version
           echo "CROSS_COMPILE=$compiler_prefix" >> "$GITHUB_ENV"
 
+      - name: Fetch pinned Kali NetHunter patches
+        run: |
+          git init nethunter
+          git -C nethunter remote add origin \
+            https://gitlab.com/kalilinux/nethunter/build-scripts/kali-nethunter-kernel.git
+          git -C nethunter fetch --depth=1 origin "$NETHUNTER_COMMIT"
+          git -C nethunter checkout --detach FETCH_HEAD
+          test "$(git -C nethunter rev-parse HEAD)" = "$NETHUNTER_COMMIT"
+
+      - name: Apply NetHunter patches for Linux 3.18
+        working-directory: kernel
+        run: |
+          exec > >(tee nethunter-patches.log) 2>&1
+          # Do not silently skip failed patches or apply patches for other kernels.
+          test "$(make -s kernelversion)" = '3.18.31'
+          patch_dir="$GITHUB_WORKSPACE/nethunter/patches/3.18"
+          mkdir -p applied-patches
+          for patch_name in \
+            add-mac80211-packet-injection-3.18.patch \
+            fix-rt2800-injection-3.18.patch; do
+            cp "$patch_dir/$patch_name" applied-patches/
+            git apply --check "applied-patches/$patch_name"
+            git apply "applied-patches/$patch_name"
+          done
+
+          # Samsung wraps ANDROID_CHARGER in an #ifndef. Adjust only the
+          # upstream HID patch's context, preserving all added NetHunter code.
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          upstream = root / 'nethunter/patches/3.18/add-HID-km-support-generic___generic_____3.18.patch'
+          patch = upstream.read_text()
+          before = ' \tANDROID_AUDIO_SRC,\n \tANDROID_CHARGER,\n \tANDROID_MIDI,\n+\tANDROID_HID,\n'
+          after = ' \tANDROID_CHARGER,\n #endif\n \tANDROID_MIDI,\n+\tANDROID_HID,\n'
+          header = Path('include/linux/usb/android.h').read_text()
+          if patch.count(before) != 1 or '\tANDROID_CHARGER,\n#endif\n\tANDROID_MIDI,' not in header:
+              raise SystemExit('Unexpected HID patch or Samsung header; review this source revision.')
+          Path('applied-patches/nethunter-hid-j727p.patch').write_text(patch.replace(before, after))
+          PY
+          git apply --check applied-patches/nethunter-hid-j727p.patch
+          git apply applied-patches/nethunter-hid-j727p.patch
+          sha256sum applied-patches/*.patch > applied-patches/SHA256SUMS
+          git diff --stat
+
       - name: Configure SM-J727P
         working-directory: kernel
         run: |
@@ -79,8 +128,43 @@ jobs:
             SELINUX_DEFCONFIG=selinux_defconfig 2>&1 | tee configure.log
           grep -qx 'CONFIG_SEC_J7POPLTE_USA_SPR=y' out/.config
           grep -qx 'CONFIG_ARM64=y' out/.config
-          # Add optional scripts/config --file out/.config edits here.
-          # Commit source/defconfig changes to your fork for repeatable custom builds.
+
+      - name: Enable NetHunter kernel features
+        working-directory: kernel
+        run: |
+          exec > >(tee nethunter-config.log) 2>&1
+          # Use the existing DWC3 dual-role / Samsung Android USB gadget.
+          # The HID patch builds f_hid through USB_G_ANDROID; USB_G_HID is a
+          # competing standalone gadget and must remain disabled.
+          scripts/config --file out/.config \
+            --enable USB --enable USB_GADGET --enable USB_G_ANDROID \
+            --disable USB_G_HID \
+            --enable WLAN --enable CFG80211 --enable CFG80211_WEXT \
+            --enable MAC80211 --enable MAC80211_RC_MINSTREL \
+            --enable MAC80211_RC_MINSTREL_HT \
+            --enable ATH_CARDS --module ATH9K_HTC \
+            --module RT2X00 --module RT2800USB \
+            --enable RT2800USB_RT33XX --enable RT2800USB_RT35XX \
+            --enable RT2800USB_RT53XX --enable RT2800USB_RT55XX \
+            --module RTL8187 --module ZD1211RW \
+            --enable PACKET --enable TUN --enable FW_LOADER
+          # Resolve dependencies without interactive questions.
+          make O=out ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" \
+            HOSTCFLAGS="$HOSTCFLAGS" PYTHON=python2 olddefconfig
+          # Fail if Kconfig discarded one of the required features.
+          for setting in \
+            CONFIG_SEC_J7POPLTE_USA_SPR=y CONFIG_ARM64=y \
+            CONFIG_USB_G_ANDROID=y CONFIG_USB_DWC3_DUAL_ROLE=y \
+            CONFIG_MAC80211=y CONFIG_CFG80211_WEXT=y \
+            CONFIG_ATH9K_HTC=m CONFIG_RT2800USB=m \
+            CONFIG_RTL8187=m CONFIG_ZD1211RW=m; do
+            grep -qx "$setting" out/.config || {
+              echo "::error::Required configuration missing: $setting"
+              exit 1
+            }
+          done
+          # Qualcomm Pronto/Prima is preserved. These mac80211 patches support
+          # external adapters; built-in Wi-Fi monitor/injection is not verified.
 
       - name: Compile kernel, device trees, and modules
         working-directory: kernel
@@ -100,6 +184,7 @@ jobs:
           cp out/arch/arm64/boot/Image out/arch/arm64/boot/Image.gz "$dist/"
           cp out/.config "$dist/kernel.config"
           cp out/System.map out/Module.symvers "$dist/"
+          cp -r applied-patches "$dist/"
 
           mapfile -d '' dtbs < <(find out/arch/arm64/boot/dts -type f -name '*.dtb' -print0)
           if (( ${#dtbs[@]} == 0 )); then
@@ -121,6 +206,12 @@ jobs:
             echo "Source repository: $(git remote get-url origin)"
             echo "Source commit: $(git rev-parse HEAD)"
             echo "Toolchain commit: $TOOLCHAIN_COMMIT"
+            echo "Kali NetHunter patch commit: $NETHUNTER_COMMIT"
+            echo "Features: mac80211 injection, rt2800 injection fix, Android USB HID"
+            echo "USB Wi-Fi modules: ath9k_htc, rt2800usb, rtl8187, zd1211rw"
+            echo "Adapter firmware and loading the matching modules are required on the phone."
+            echo "Built-in Pronto/Prima Wi-Fi monitor/injection: not verified."
+            echo "NetHunter app, Kali rootfs, and boot-image packaging are not included."
             "${CROSS_COMPILE}gcc" --version
             echo
             echo 'These are raw build outputs, not a flashable boot image or ZIP.'
@@ -135,7 +226,7 @@ jobs:
       - name: Upload kernel artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: j727p-kernel-${{ github.run_number }}
+          name: j727p-nethunter-${{ github.run_number }}-${{ github.run_attempt }}
           path: dist/
           if-no-files-found: error
           retention-days: 14
@@ -144,8 +235,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: j727p-build-logs-${{ github.run_number }}
+          name: j727p-nethunter-logs-${{ github.run_number }}-${{ github.run_attempt }}
           path: |
+            kernel/nethunter-patches.log
+            kernel/nethunter-config.log
             kernel/configure.log
             kernel/build.log
           if-no-files-found: ignore
